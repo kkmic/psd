@@ -4,7 +4,7 @@ import cmsisdsp as dsp
 import numpy as np
 import matplotlib.animation as animation
 
-sampleRate = 4096
+sampleRate = 8192
 nb = 4096 # int(fragmentLength * sampleRate) // Source/TransformFunctions/arm_cfft_init_f32.c
 
 #################################################################################
@@ -21,7 +21,8 @@ def signalGenerator(amplitude, f, t, alpha):
     # return amplitude * np.sin(2 * np.pi * f * t / nb + alpha)
     # return amplitude * np.sin(2*np.pi*f*t/nb) + np.sin(2*np.pi*10*t/nb)
 #    return amplitude * np.sin(2*np.pi*f*t/nb) / np.exp(t*3*np.e/nb)
-    i = sampleRate // (2 * f) # 2 sides
+    coeff = sampleRate // nb
+    i = sampleRate // (2 * f * coeff) # 2 sides
     return np.array([amplitude if (n % (2*i) < i) else -amplitude for n in t])
 
 
@@ -129,33 +130,35 @@ def updateFrequency(frequency):
                             t = t,
                             alpha = PHASE_ANGLE)
 
+    print (f"Call updateFrequency to {frequency}")
+
     signalR = imToReal(signal)
     resultR = dsp.arm_cfft_f32(cfftf32, signalR, 0, 1)
-    mag = dsp.arm_cmplx_mag_f32(resultR)
+    mag = dsp.arm_cmplx_mag_f32(resultR)[0:nb//2]
     rms = dsp.arm_rms_f32(resultR)
     sq = rms / np.sqrt(2)
-    mx, fmax = dsp.arm_max_f32(mag[0:nb//2])
-    print (f"updateFrequency: rms = {rms}, sq = {sq}")
+    mx, fmax = dsp.arm_max_f32(mag)
 
     sl[0].set_ydata(signal)
     sll.get_texts()[0].set_text(f"alpha={PHASE_ANGLE} deg, f={frequency}Hz")
     flr[0].set_ydata(resultR[0:nb:2])
     fli[0].set_ydata(resultR[1:nb:2])
-    ml[0].set_ydata(mag[0:nb//2])
+    ml[0].set_ydata(mag)
 
-    # A vline is a two-point Line2D spanning y in axes coordinates, so only its x
-    # is data and both points must be given; an hline is the mirror image.
+    # # A vline is a two-point Line2D spanning y in axes coordinates, so only its x
+    # # is data and both points must be given; an hline is the mirror image.
     mlv.set_xdata([fmax, fmax])
     mlh.set_ydata([mx, mx])
     mlr.set_ydata([rms, rms])
 
-    # legend texts follow artist insertion order: 0 plot, 1 vline, 2 max, 3 rms
+    # # legend texts follow artist insertion order: 0 plot, 1 vline, 2 max, 3 rms
     mll.get_texts()[1].set_text(f"{fmax} Hz")
     mll.get_texts()[2].set_text(f"{mx:.2f}")
     mll.get_texts()[3].set_text(f"RMS: {rms:.2f}, Norm: {sq:.2f}")
 
     return *sl, sll, *flr, *fli, *ml, mlv, mlh, mlr, mll
 
+is_paused = False
 
 def main():
     parser = argparse.ArgumentParser(description = "CMSIS-DSP CFFT test/visualization")
@@ -163,12 +166,27 @@ def main():
                         help = "run the alpha phase sweep animation")
     args = parser.parse_args()
 
-    # if args.phase:
-    #     ani = animation.FuncAnimation(fig=fig, func=updatePhase, frames=range(-90, 91), interval=100, blit=True)
-    # else:
-    #     ani = animation.FuncAnimation(fig=fig, func=updateFrequency, frames=range(50, 100), interval=100, blit=True)
+    if args.phase:
+        ani = animation.FuncAnimation(fig=fig, func=updatePhase, frames=range(-90, 91), interval=200, blit=True)
+    else:
+        ani = animation.FuncAnimation(fig=fig, func=updateFrequency, frames=range(50, 100), interval=100, blit=True)
+
+    # 3. Define the event handler to toggle pause/resume
+    def on_click(event):
+        global is_paused
+        if is_paused:
+            ani.resume()  # Resume the framework timer
+            print("Animation Resumed")
+        else:
+            ani.pause()   # Pause the framework timer
+            print("Animation Paused")
+        is_paused = not is_paused
+
+    # 4. Connect the click event to the handler
+    fig.canvas.mpl_connect('button_press_event', on_click)
 
     plt.show()
+
 
 if __name__ == "__main__":
     main()
