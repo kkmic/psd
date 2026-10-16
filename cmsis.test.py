@@ -4,7 +4,7 @@ import cmsisdsp as dsp
 import numpy as np
 import matplotlib.animation as animation
 
-sampleRate = 8192
+sampleRate = 65536
 nb = 4096 # int(fragmentLength * sampleRate) // Source/TransformFunctions/arm_cfft_init_f32.c
 
 #################################################################################
@@ -21,8 +21,7 @@ def signalGenerator(amplitude, f, t, alpha):
     # return amplitude * np.sin(2 * np.pi * f * t / nb + alpha)
     # return amplitude * np.sin(2*np.pi*f*t/nb) + np.sin(2*np.pi*10*t/nb)
 #    return amplitude * np.sin(2*np.pi*f*t/nb) / np.exp(t*3*np.e/nb)
-    coeff = sampleRate // nb
-    i = sampleRate // (2 * f * coeff) # 2 sides
+    i = nb // (2 * f) # 2 sides
     return np.array([amplitude if (n % (2*i) < i) else -amplitude for n in t])
 
 
@@ -72,8 +71,8 @@ fft = np.arange(nb//2)
 re = resultR[0:nb:2]
 im = resultR[1:nb:2]
 
-flr = fftPlot.plot(fft, re, '.', color="#2a78d680", label="FFT Real", linewidth=1)
-fli = fftPlot.plot(fft, im, '.', color="#ff78d680", label="FFT Img", linewidth=1)
+flr = fftPlot.plot(fft, re, '.-', color="#2a78d680", label="FFT Real", linewidth=1)
+fli = fftPlot.plot(fft, im, '.-', color="#ff78d680", label="FFT Img", linewidth=1)
 fftPlot.grid(True, color="#e1e0d9", linewidth=0.5)
 
 # yMax = np.max(re)
@@ -88,7 +87,9 @@ fftPlot.set_ylim(-nb*A - 20, nb*A + 20)
 max, fMax = dsp.arm_max_f32(mag[0:nb//2])
 rms = dsp.arm_rms_f32(resultR)
 norm = rms / np.sqrt(2)
-ml = magPlot.plot(fft, mag[0:nb//2], '.', color="#2a78d6", label="Square Magnitude")
+ml = magPlot.plot(fft, mag[0:nb//2], '.-', color="#2a78d6", label="Square Magnitude")
+# magPlot.set_yscale('log')
+
 # axvline/axhline return a plain Line2D (not a container), so keep the handles:
 # they are what the update functions move via set_xdata/set_ydata.
 mlv = magPlot.axvline(x=fMax, color="#00d000", label=f"{fMax} Hz", linewidth = 0.5)
@@ -130,8 +131,6 @@ def updateFrequency(frequency):
                             t = t,
                             alpha = PHASE_ANGLE)
 
-    print (f"Call updateFrequency to {frequency}")
-
     signalR = imToReal(signal)
     resultR = dsp.arm_cfft_f32(cfftf32, signalR, 0, 1)
     mag = dsp.arm_cmplx_mag_f32(resultR)[0:nb//2]
@@ -172,18 +171,17 @@ def main():
         ani = animation.FuncAnimation(fig=fig, func=updateFrequency, frames=range(50, 100), interval=100, blit=True)
 
     # 3. Define the event handler to toggle pause/resume
-    def on_click(event):
+    def on_key_press(event):
         global is_paused
-        if is_paused:
-            ani.resume()  # Resume the framework timer
-            print("Animation Resumed")
-        else:
-            ani.pause()   # Pause the framework timer
-            print("Animation Paused")
-        is_paused = not is_paused
+        if event.key == ' ':
+            if is_paused:
+                ani.resume()  # Resume the framework timer
+            else:
+                ani.pause()   # Pause the framework timer
+            is_paused = not is_paused
 
     # 4. Connect the click event to the handler
-    fig.canvas.mpl_connect('button_press_event', on_click)
+    fig.canvas.mpl_connect('key_press_event', on_key_press)
 
     plt.show()
 
