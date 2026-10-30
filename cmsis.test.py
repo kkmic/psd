@@ -4,7 +4,6 @@ import cmsisdsp as dsp
 import numpy as np
 import matplotlib.animation as animation
 
-sampleRate = 65536
 nb = 4096 # int(fragmentLength * sampleRate) // Source/TransformFunctions/arm_cfft_init_f32.c
 
 #################################################################################
@@ -21,8 +20,7 @@ def signalGenerator(amplitude, f, t, alpha):
     # return amplitude * np.sin(2 * np.pi * f * t / nb + alpha)
     # return amplitude * np.sin(2*np.pi*f*t/nb) + np.sin(2*np.pi*10*t/nb)
 #    return amplitude * np.sin(2*np.pi*f*t/nb) / np.exp(t*3*np.e/nb)
-    i = nb // (2 * f) # 2 sides
-    return np.array([amplitude if (n % (2*i) < i) else -amplitude for n in t])
+    return np.array([amplitude if (np.sin(2*np.pi*f*n / nb + alpha) > 0) else -amplitude for n in t])
 
 
 #################################################################################
@@ -166,7 +164,7 @@ def main():
     args = parser.parse_args()
 
     if args.phase:
-        ani = animation.FuncAnimation(fig=fig, func=updatePhase, frames=range(-90, 91), interval=200, blit=True)
+        ani = animation.FuncAnimation(fig=fig, func=updatePhase, frames=range(-90, 91), interval=100, blit=True)
     else:
         ani = animation.FuncAnimation(fig=fig, func=updateFrequency, frames=range(50, 100), interval=100, blit=True)
 

@@ -9,6 +9,7 @@
             "type": "debugpy",
             "request": "launch",
             "program": "${file}",
+            "args": [ "pico/0002-100kSs-twolamp/0002-100kSs-twolamp_01.csv" ],
             "console": "integratedTerminal"
         },
     ]
