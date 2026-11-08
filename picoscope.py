@@ -21,29 +21,25 @@ def realToIm(ar):
 def parseWaveform(filePath):
     print (filePath)
 
-    t = np.empty(nb)
-    signal = np.empty(nb)
-    count = 0
+    t = []
+    signal = []
     
     with open(filePath) as f:
         for _ in range(3):
             f.readline()
         for line in f:
-            if (count >= nb): break
-
             timeStr, mVStr = line.split(";")
-            t[count] = float(timeStr.replace(",", "."))
-            signal[count] = float(mVStr.replace(",", "."))
-            count += 1
+            t.append(float(timeStr.replace(",", ".")))
+            signal.append(float(mVStr.replace(",", ".")))
 
-    if count > 0:
+    if len(t) > 0:
         baseTime = t[0]
 
         if (baseTime != 0.0): # Align timestamps if they are shifted behind 0
             for i in range(len(t)):
                 t[i] -= baseTime
     
-    return (t, signal)
+    return (np.array(t), np.array(signal))
 
 def main():
     parser = argparse.ArgumentParser(description = "PicoScope waveform viewer")
@@ -59,7 +55,7 @@ def main():
         parser.print_help()
         return
 
-    t, signal = parseWaveform(filePath)
+    fullT, fullSignal = parseWaveform(filePath)
 
     cfftf32 = dsp.arm_cfft_instance_f32()
     status = dsp.arm_cfft_init_f32(cfftf32, nb)
@@ -68,28 +64,37 @@ def main():
         print (f"arm_cfft_init_f32 status = {status}")
         return
 
-    signalR = imToReal(signal)
+    signalR = imToReal(fullSignal[:nb])
     resultR = dsp.arm_cfft_f32(cfftf32, signalR, 0, 1)
 
-    mag = dsp.arm_cmplx_mag_f32(resultR)[:nb//2]
+    fig, (signalPlot, fftPlot, magPlot) = plt.subplots(3, 1, layout="constrained")
 
-    fig, (signalPlot, fftPlot, magPlot) = plt.subplots(3, 1, figsize=(15, 10))
-
-    signalPlot.plot(t, signal, '-', color="#2a78d6", linewidth=1, label=f"{filePath}")
+    signalPlot.plot(fullT[:nb], fullSignal[:nb], '-', color="#2a78d6", linewidth=1, label=f"{filePath}")
+    signalPlot.plot(fullT[nb:], fullSignal[nb:], '-', color="#d00000", linewidth=1)
     signalPlot.set_ylabel("mV", color="#898781")
     signalPlot.legend(loc="upper right")
     signalPlot.grid(True, color="#e1e0d9", linewidth=0.5)
+    signalPlot.set_xlabel("t, mS", color="#000000")
 
-    fft = np.arange(nb//2)
-    re = resultR[0:nb:2]
-    im = resultR[1:nb:2]
+    C = sampleRate / nb
+    N = int(2000 / C) # 2000 Hz is the threshold value
+
+    fft = np.linspace(0, C * N, N)
+
+    re = resultR[0:N*2:2]
+    im = resultR[1:N*2:2]
 
     fftPlot.plot(fft, re, '.-', color="#2a78d680", label="FFT Real", linewidth=1)
     fftPlot.plot(fft, im, '.-', color="#ff78d680", label="FFT Img", linewidth=1)
+    fftPlot.axhline(y=0, color="#d0000080", label="0", linewidth = 0.5)
     fftPlot.grid(True, color="#e1e0d9", linewidth=0.5)
     fftPlot.legend(loc="upper right")
+    fftPlot.set_xlabel("F, Hz", color="#000000")
 
+    mag = dsp.arm_cmplx_mag_f32(resultR)[:N]
     max, fMax = dsp.arm_max_f32(mag)
+    fMax *= C
+
     rms = dsp.arm_rms_f32(resultR)
     norm = rms / np.sqrt(2)
     magPlot.plot(fft, mag, '.-', color="#2a78d6", label="Square Magnitude")
@@ -98,7 +103,7 @@ def main():
     magPlot.axhline(y=max, color="#ffd000", label=f"{max:.2f}", linewidth = 0.5)
     magPlot.axhline(y=rms, color="#d00000", label=f"RMS: {rms:.2f}, Norm: {norm:.2f}", linewidth = 0.5)
     magPlot.grid(True, color="#e1e0d9", linewidth=0.5)
-    magPlot.set_xlabel("Sample", color="#000000")
+    magPlot.set_xlabel("F, Hz", color="#000000")
     magPlot.legend(loc="upper right")
 
     plt.show()
