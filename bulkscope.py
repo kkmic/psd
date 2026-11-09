@@ -11,10 +11,10 @@ nb = 4096 # samples
 sampleRate = 48800 # Samples/s
 
 C = sampleRate / nb
-FFT_MAX_FREQ=1000
+FFT_MAX_FREQ = 1000
 N = int(FFT_MAX_FREQ / C)
 
-fftX = np.linspace(0, FFT_MAX_FREQ, N)
+fftX = np.linspace(0, (N - 1) * C, N)
 
 #################################################################################
 def imToReal(a):

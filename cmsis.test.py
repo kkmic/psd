@@ -4,7 +4,28 @@ import cmsisdsp as dsp
 import numpy as np
 import matplotlib.animation as animation
 
-nb = 4096 # int(fragmentLength * sampleRate) // Source/TransformFunctions/arm_cfft_init_f32.c
+#################################################################################
+sampleRate = 8192
+frameWidth = 0.5 # 500 mS
+
+F = 50 # Hz
+t = np.linspace(0, frameWidth, int(sampleRate * frameWidth))
+
+nb = 4096
+
+#nb = 16
+# while nb <= 4096 and nb * 2 <= len(t):
+#     nb *= 2
+
+C = sampleRate / nb
+FFT_MAX_FREQ = 1000
+N = int(FFT_MAX_FREQ / C)
+
+fftX = np.linspace(0, (N - 1) * C, N)
+
+A = 1
+PHASE_ANGLE = 0
+# FREQ_SWEEP = range(50, 100) # Hz, frames of updateFrequency
 
 #################################################################################
 def imToReal(a):
@@ -17,18 +38,13 @@ def realToIm(ar):
     return(ar[0::2] + 1j * ar[1::2])
 
 def signalGenerator(amplitude, f, t, alpha):
-    # return amplitude * np.sin(2 * np.pi * f * t / nb + alpha)
+    return amplitude * np.sin(2 * np.pi * f * t + alpha)
     # return amplitude * np.sin(2*np.pi*f*t/nb) + np.sin(2*np.pi*10*t/nb)
 #    return amplitude * np.sin(2*np.pi*f*t/nb) / np.exp(t*3*np.e/nb)
-    return np.array([amplitude if (np.sin(2*np.pi*f*n / nb + alpha) > 0) else -amplitude for n in t])
+    # return np.array([amplitude if (np.sin(2*np.pi*f*n / nb + alpha) > 0) else -amplitude for n in t])
 
 
 #################################################################################
-F = 50 # Hz
-t = np.arange(nb)
-A = 1
-PHASE_ANGLE = 0
-FREQ_SWEEP = range(50, 100) # Hz, frames of updateFrequency
 
 signal = signalGenerator(amplitude = A,
                             f = F, # Hz
@@ -42,11 +58,8 @@ if (status != 0):
     print (f"arm_cfft_init_f32 status = {status}")
     exit(1)
 
-signalR = imToReal(signal)
+signalR = imToReal(signal[:nb])
 
-resultR = dsp.arm_cfft_f32(cfftf32, signalR, 0, 1)
-
-mag = dsp.arm_cmplx_mag_f32(resultR)
 # mag = dsp.arm_cmplx_mag_squared_f32(resultR)
 
 #################################################################################
@@ -65,32 +78,34 @@ signalPlot.tick_params(colors="#898781", labelcolor="#898781")
 
 # end = len(signal)
 
-fft = np.arange(nb//2)
-re = resultR[0:nb:2]
-im = resultR[1:nb:2]
+resultR = dsp.arm_cfft_f32(cfftf32, signalR, 0, 1)
+re = resultR[0:N*2:2]
+im = resultR[1:N*2:2]
 
-flr = fftPlot.plot(fft, re, '.-', color="#2a78d680", label="FFT Real", linewidth=1)
-fli = fftPlot.plot(fft, im, '.-', color="#ff78d680", label="FFT Img", linewidth=1)
+flr = fftPlot.plot(fftX, re, '.-', color="#2a78d680", label="FFT Real", linewidth=1)
+fli = fftPlot.plot(fftX, im, '.-', color="#ff78d680", label="FFT Img", linewidth=1)
 fftPlot.grid(True, color="#e1e0d9", linewidth=0.5)
 
 # yMax = np.max(re)
 # fftPlot.axhline(y=yMax, color="#d00000", label=f"{yMax:.2f}", linewidth = 0.5)
 # fftPlot.axvline(x=F, color="#00d000", label=f"{F} Hz", linewidth = 0.5)
 fftPlot.legend(loc="center right")
-fftPlot.set_ylim(-nb*A - 20, nb*A + 20)
+# fftPlot.set_ylim(-nb*A - 20, nb*A + 20)
 # fftPlot.tick_params(colors="#898781", labelcolor="#898781")
 
 # scan the plotted half only: the spectrum is symmetric, so a full-array argmax can
 # return the mirror bin nb-k, which lies outside the plotted 0..nb/2 range
-max, fMax = dsp.arm_max_f32(mag[0:nb//2])
+
+mag = dsp.arm_cmplx_mag_f32(resultR)[:N]
+max, fMax = dsp.arm_max_f32(mag)
 rms = dsp.arm_rms_f32(resultR)
 norm = rms / np.sqrt(2)
-ml = magPlot.plot(fft, mag[0:nb//2], '.-', color="#2a78d6", label="Square Magnitude")
+ml = magPlot.plot(fftX, mag, '.-', color="#2a78d6", label="Square Magnitude")
 # magPlot.set_yscale('log')
 
 # axvline/axhline return a plain Line2D (not a container), so keep the handles:
 # they are what the update functions move via set_xdata/set_ydata.
-mlv = magPlot.axvline(x=fMax, color="#00d000", label=f"{fMax} Hz", linewidth = 0.5)
+mlv = magPlot.axvline(x=fftX[fMax], color="#00d000", label=f"{fftX[fMax]:.2f} Hz", linewidth = 0.5)
 mlh = magPlot.axhline(y=max, color="#ffd000", label=f"{max:.2f}", linewidth = 0.5)
 mlr = magPlot.axhline(y=rms, color="#d00000", label=f"RMS: {rms:.2f}, Norm: {norm:.2f}", linewidth = 0.5)
 magPlot.grid(True, color="#e1e0d9", linewidth=0.5)
@@ -99,11 +114,11 @@ mll = magPlot.legend(loc="center right")
 
 # blit=True freezes the axes background, so the y-limits must already cover every
 # frame before the animation starts: scan the sweep the markers will walk.
-sweepPeak = 0.0
-for fr in FREQ_SWEEP:
-    frMag = dsp.arm_cmplx_mag_f32(dsp.arm_cfft_f32(cfftf32, imToReal(signalGenerator(A, fr, t, PHASE_ANGLE)), 0, 1))
-    sweepPeak = np.max([sweepPeak, np.max(frMag[0:nb//2])])
-magPlot.set_ylim(-sweepPeak * 0.02, sweepPeak * 1.1)
+# sweepPeak = 0.0
+# for fr in FREQ_SWEEP:
+#     frMag = dsp.arm_cmplx_mag_f32(dsp.arm_cfft_f32(cfftf32, imToReal(signalGenerator(A, fr, t, PHASE_ANGLE)), 0, 1))
+#     sweepPeak = np.max([sweepPeak, np.max(frMag[0:nb//2])])
+# magPlot.set_ylim(-sweepPeak * 0.02, sweepPeak * 1.1)
 
 def updatePhase(phaseAngle):
     signal = signalGenerator(amplitude = A,
@@ -163,23 +178,23 @@ def main():
                         help = "run the alpha phase sweep animation")
     args = parser.parse_args()
 
-    if args.phase:
-        ani = animation.FuncAnimation(fig=fig, func=updatePhase, frames=range(-90, 91), interval=100, blit=True)
-    else:
-        ani = animation.FuncAnimation(fig=fig, func=updateFrequency, frames=range(50, 100), interval=100, blit=True)
+    # if args.phase:
+    #     ani = animation.FuncAnimation(fig=fig, func=updatePhase, frames=range(-90, 91), interval=100, blit=True)
+    # else:
+    #     ani = animation.FuncAnimation(fig=fig, func=updateFrequency, frames=range(50, 100), interval=100, blit=True)
 
-    # 3. Define the event handler to toggle pause/resume
-    def on_key_press(event):
-        global is_paused
-        if event.key == ' ':
-            if is_paused:
-                ani.resume()  # Resume the framework timer
-            else:
-                ani.pause()   # Pause the framework timer
-            is_paused = not is_paused
+    # # 3. Define the event handler to toggle pause/resume
+    # def on_key_press(event):
+    #     global is_paused
+    #     if event.key == ' ':
+    #         if is_paused:
+    #             ani.resume()  # Resume the framework timer
+    #         else:
+    #             ani.pause()   # Pause the framework timer
+    #         is_paused = not is_paused
 
-    # 4. Connect the click event to the handler
-    fig.canvas.mpl_connect('key_press_event', on_key_press)
+    # # 4. Connect the click event to the handler
+    # fig.canvas.mpl_connect('key_press_event', on_key_press)
 
     plt.show()
 
