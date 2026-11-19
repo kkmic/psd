@@ -2,30 +2,44 @@
 
 Durable conclusions from the psd project investigation (Nov 2026).
 Sources: STM32F4-Discovery schematic (MB997 rev B2), RM0090 Rev 22,
-STM32CubeF4 CMSIS-DSP 1.10.0, measurements in `arm/cfft_bench/` → `docs/stat.md`.
+STM32CubeF4 CMSIS-DSP 1.10.0, on-board measurements via openocd + DWT
+(`arm/cfft_bench/` → `docs/stat.md`).
+
+## Final results (real board, DWT CYCCNT, SYSCLK = 168 MHz, -Os, gcc 10.3.1)
+
+| Function (N = 4096) | Cycles (avg) | Time @ 168 MHz |
+|---|---:|---:|
+| arm_cfft_f32 fwd + bitrev | 523,150 | 3.113 ms |
+| arm_cfft_f32 fwd, no bitrev | 468,136 | 2.786 ms |
+| → bit-reversal cost | 55,014 | 0.327 ms |
+| arm_cmplx_mag_f32 | 237,725 | 1.415 ms |
+| both (psd pipeline) | 760,875 | 4.529 ms |
+
+* Correctness check on target: 50 Hz sine @ 8192 Hz → spectral peak in bin 25. OK.
+* QEMU instruction-trace + TRM-timing model had estimated 446,720 (FFT, −17 %:
+  flash wait states not modeled) and 266,265 (mag, +11 %: streaming loads /
+  VSQRT pipelining over-costed). Board numbers are authoritative.
+* sqrtf insight: 40 of 65 cycles/sample of arm_cmplx_mag_f32 are the sqrt
+  path, 26 of them newlib errno checks; `-ffast-math` would give ≈ 1.0 ms.
 
 ## Hardware / clock facts (verified)
 
-* STM32F4-Discovery board: STM32F407VGT6, HSE crystal X2 = **8 MHz** on PH0/PH1
-  (fitted); LSE 32.768 kHz crystal **not fitted**; ST-LINK MCU can be clocked
-  from the target's MCO (PA8).
+* STM32F4-Discovery: STM32F407VGT6, HSE crystal X2 = **8 MHz** on PH0/PH1
+  (fitted); LSE 32.768 kHz **not fitted**; ST-LINK can be clocked from target MCO.
 * RM0090 PLL constraints (pp. 164–165): PLLM 2–63 with **VCO input 1–2 MHz**
   (2 MHz recommended); PLLN 50–432 with **VCO output 100–432 MHz**;
   **PLLP ∈ {2, 4, 6, 8}**; PLLQ 2–15 (USB OTG FS / SDIO / RNG need exactly
-  48 MHz). STM32F407 SYSCLK max = **168 MHz** (the RM chapter text shows the
-  F42x/43x 180 MHz variant — same chapter covers both families).
+  48 MHz). STM32F407 SYSCLK max = **168 MHz** (RM's "180 MHz" caution text is
+  the F42x/43x variant in the same chapter).
 * Formula: `SYSCLK = (HSE / M) × N / P`; VCO = `(HSE / M) × N`.
 * With 8 MHz HSE (M=8 → 1 MHz): every **integer MHz from 13 to 168** is
   reachable (P=8 → 12.5–54, P=6 → 16.7–72, P=4 → 25–108, P=2 → 50–168),
-  plus 12.5 MHz exactly; HSE direct = 8 MHz, HSI = 16 MHz (HSI-PLL with
-  M=16 reproduces the same set). Fractional ×.5/.25/1/6/1/8-MHz steps also
-  exist.
-* The canonical 168 MHz config: **M=4, N=168, P=2, Q=7** → PLL input 2 MHz,
-  VCO 336 MHz, SYSCLK 168 MHz, PLL48CK = 48 MHz exact. Required companions:
-  **voltage scale 1** (scale 2 caps at 144 MHz), **flash latency 5 WS**,
-  APB1 /4 = 42 MHz (limit), APB2 /2 = 84 MHz (limit), prefetch on.
-* ST's example projects for this board (e.g. ADC_RegularConversion_DMA) ship
-  at 144 MHz / scale 2 / 4 WS (M=8, N=288, P=2, Q=6) — not the max.
+  plus 12.5 MHz exactly; HSE direct = 8 MHz, HSI = 16 MHz.
+* Canonical 168 MHz config: **M=4, N=168, P=2, Q=7** → PLL input 2 MHz,
+  VCO 336 MHz, PLL48CK = 48 MHz exact. Required companions: **voltage scale 1**
+  (scale 2 caps at 144 MHz), **flash latency 5 WS**, APB1 /4 = 42 MHz (limit),
+  APB2 /2 = 84 MHz (limit), prefetch on.
+* ST's Discovery examples ship at 144 MHz / scale 2 / 4 WS — not the max.
 
 ## CMSIS-DSP arm_cfft_f32 structure (v1.10.0, non-MVE / Cortex-M4F path)
 
@@ -39,51 +53,59 @@ STM32CubeF4 CMSIS-DSP 1.10.0, measurements in `arm/cfft_bench/` → `docs/stat.m
 * For N=4096: 4 radix-8 stages = 585 plain + 1463 twiddle butterflies;
   bit-reversal = 2016 index swaps (table length 4032).
 
-## Measurements (N = 4096, -Os, gcc 10.3.1, hard float)
+## Reproducing on the real board (full command list)
 
-| Function | Instructions | Cycles | Time @ 168 MHz |
-|---|---:|---:|---:|
-| arm_cfft_f32 fwd+bitrev | 323,357 | 446,720 | 2.659 ms |
-| arm_cmplx_mag_f32 | 106,505 | 266,265 | 1.585 ms |
-| both (psd pipeline) | 429,862 | 712,985 | 4.244 ms |
+Board: STM32F4-Discovery attached via ST-LINK/V2.1 (`lsusb` → `0483:374b`).
+Project: `~/work/psd/arm/cfft_bench` (firmware: `Src/main.c` — HAL clock
+setup to 168 MHz + DWT measurement of arm_cfft_f32 / arm_cmplx_mag_f32,
+semihosting output).
 
-* Bit reversal = 14.4 % of the FFT (64.5k cycles = 0.384 ms); radix-8 kernel
-  = 85.5 %.
-* `arm_cmplx_mag_f32` = 65 cycles/sample, of which **26 are newlib `sqrtf`
-  errno-wrapper overhead** around the actual 14-cycle `VSQRT.F32`.
-  `-ffast-math`/`-fno-math-errno` would cut it to ≈1.0 ms.
-* Model assumes zero-wait memory (SRAM or flash+ART); flash-bound worst case
-  ≈ +10–30 %.
+```bash
+# 1. build (arm-none-eabi-gcc, -Os, hard float; ~931 KB, fits 1 MB flash)
+cd ~/work/psd/arm/cfft_bench
+make all                     # -> build/hw_Os.elf
 
-## Measurement technique (reusable)
+# 2. flash + run; benchmark prints DWT results via semihosting, then exits
+make flash
+#    = openocd -f board/stm32f4discovery.cfg \
+#        -c "init" -c "arm semihosting enable" -c "reset halt" \
+#        -c "program build/hw_Os.elf verify" -c "reset run" \
+#        -c "sleep 60000" -c "shutdown"
 
-* **QEMU DWT does not work**: the STM32F405 SoC model (netduinoplus2) does not
-  implement the DWT unit — CYCCNT reads 0 — and QEMU is not cycle-accurate
-  regardless.
-* Working method: single-instruction trace
-  `qemu-system-arm -M netduinoplus2 -d nochain,exec -accel tcg,one-insn-per-tb=on -D qemu1.log`
-  → every Trace line = exactly one executed instruction. Put noinline marker
-  functions around the measured call; count lines between marker PCs =
-  exact dynamic instruction count. Then cost each executed instruction with
-  the Cortex-M4 TRM table (FP ALU 1, VLDR/VSTR/LDR/STR 2, taken branch 3,
-  not-taken 1, BL 3, BX 2, PUSH/POP 1+n, VSQRT 14), branch direction taken
-  from the successor PC in the trace. Tool: `arm/cfft_bench/trace_cycles.py`.
-* xPack QEMU (9.2.4) quirks: no `-singlestep` flag (removed in QEMU 8.1+) —
-  use `-accel tcg,one-insn-per-tb=on`; `--board/--mcu` flags exist but the
-  classic `-M netduinoplus2` machine works and is what we used.
-* QEMU functional validation: 50 Hz sine @ 8192 Hz, N=4096 → spectral peak
-  must land in bin `f·N/fs` = 25. Semihosting output via
-  `bkpt 0xab` (SYS_WRITE0) works under QEMU and under ST-Link debug sessions.
-* For hardware-exact numbers: flash `arm/cfft_bench/build/hw407_Os.elf`
-  (or rebuild with -DSTM32F407xx + F407 startup) and read DWT CYCCNT
-  (`DEMCR |= TRCENA; DWT_CTRL |= CYCCNTENA`) in a debug session.
+# 3. alternative — read DWT registers directly with gdb while openocd serves:
+make server                  # terminal 1: openocd -f board/stm32f4discovery.cfg
+make dwt                     # terminal 2: gdb-multiarch -> port 3333:
+#    DWT_CTRL  = 0x40000001   (CYCCNTENA set)
+#    DWT_CYCCNT = <free-running total since boot>
+#    DEMCR     = 0x01000000   (TRCENA set)
+
+# manual equivalents:
+openocd -f board/stm32f4discovery.cfg -c init -c "arm semihosting enable" \
+        -c "reset halt" -c "program build/hw_Os.elf verify" -c "reset run"
+gdb-multiarch -batch -ex "target remote :3333" \
+    -ex 'printf "DWT_CYCCNT = %u\n", *(unsigned int*)0xE0001004' -ex detach
+echo shutdown | telnet localhost 4444     # stop openocd
+```
+
+Gotchas learned:
+
+* If openocd dies mid-session the ST-Link can stay wedged ("Error: open
+  failed"); it recovers after USB re-enumeration (replug or wait).
+* Firmware built against HAL needs a `SysTick_Handler` (→ `HAL_IncTick()`);
+  the startup file's weak Default_Handler would otherwise trap on the first
+  1 kHz tick.
+* Semihosting prints must be bracketed by openocd's `arm semihosting enable`;
+  without it the BKPT 0xAB faults.
+* The built benchmark is ~931 KB text because all CMSIS-DSP tables compile
+  into one object (no per-table section splitting) — fits the F407VG 1 MB flash.
 
 ## Environment notes
 
-* Toolchain on this machine: `arm-none-eabi-gcc` 10.3.1, `clang` 15,
-  xPack `qemu-system-arm` 9.2.4, `poppler-utils` (pdftotext), `python3`.
-  No `jq`.
+* Toolchain on this machine: `arm-none-eabi-gcc` 10.3.1, `gdb-multiarch`
+  (no arm-none-eabi-gdb), `openocd` 0.11.0 with `board/stm32f4discovery.cfg`,
+  `clang` 15, `poppler-utils`, `python3`. No `jq`.
 * CMSIS-DSP 1.10.0 headers use `#include "dsp/transform_functions.h"` —
   needs `-I <DSP>/Include` (the `dsp/` subdir is below it).
-* The built benchmark links at ~931 KB text (all CMSIS tables compiled into
-  one object without per-table section splitting) — fits the F407VG 1 MB flash.
+* DWT on QEMU (netduinoplus2 / STM32F405 model) is not implemented — CYCCNT
+  reads 0; the earlier QEMU measurements used single-instruction execution
+  traces + a TRM timing model instead (method retired once the board was used).

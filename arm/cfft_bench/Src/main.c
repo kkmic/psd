@@ -8,13 +8,10 @@
  *   - required side effects: regulator scale 1 (scale 2 caps at 144 MHz),
  *     flash latency 5 WS (was 4).
  *
- * Timing via DWT CYCCNT. Output via semihosting SYS_WRITE0 (works under
- * QEMU and under an ST-Link/GDB debug session on real hardware).
- *
- * BENCH_QEMU: skips HAL clock setup (QEMU's stm32f405 machine does not
- * model RCC oscillators); the DSP functions and DWT measurement are
- * unaffected - cycles counted are the same code bytes.
+ * Timing via DWT CYCCNT (CMSIS core_cm4.h definitions). Output via
+ * semihosting SYS_WRITE0, captured by openocd or a GDB debug session.
  */
+#include <stm32f4xx.h>          /* STM32F407xx (Makefile) -> core_cm4.h: DWT, CoreDebug */
 #include "stm32f4xx_hal.h"
 #include "arm_math.h"
 
@@ -32,14 +29,14 @@ static void MARK_NOINLINE mark_cfft_end(void)   { __asm volatile("nop"); }
 static void MARK_NOINLINE mark_mag_begin(void)  { __asm volatile("nop"); }
 static void MARK_NOINLINE mark_mag_end(void)    { __asm volatile("nop"); }
 
-#ifndef BENCH_QEMU
 static void SystemClock_Config(void);
-#endif
 
-/* ---- DWT / semihosting helpers ---- */
-#define DEMCR      (*(volatile uint32_t *)0xE000EDFC)
-#define DWT_CTRL   (*(volatile uint32_t *)0xE0001000)
-#define DWT_CYCCNT (*(volatile uint32_t *)0xE0001004)
+/* DWT cycle counter comes from the CMSIS-Core system headers
+ * (Drivers/CMSIS/Core/Include/core_cm4.h, pulled in via stm32f4xx.h):
+ *   DWT->CYCCNT, DWT->CTRL / DWT_CTRL_CYCCNTENA_Msk,
+ *   DWT_CTRL_NOCYCCNT_Msk, CoreDebug->DEMCR / CoreDebug_DEMCR_TRCENA_Msk. */
+
+/* ---- semihosting helpers ---- */
 
 static void sh_write0(const char *s)
 {
@@ -68,6 +65,7 @@ static void print_line(const char *label, uint32_t v)
     while (v > 0) { tmp[n++] = '0' + (v % 10); v /= 10; }
     for (j = n - 1; j >= 0; j--) buf[i++] = tmp[j];
     buf[i++] = '\n';
+    buf[i] = 0;
     sh_write0(buf);
     (void)buf;
 }
@@ -96,23 +94,26 @@ static void fill_input(void)
     }
 }
 
+/* HAL_Init() starts SysTick at 1 kHz; without this handler the weak
+ * Default_Handler in the startup file would trap on the first tick. */
+void SysTick_Handler(void)
+{
+    HAL_IncTick();
+}
+
 int main(void)
 {
-#ifdef BENCH_QEMU
-    SystemCoreClock = 168000000u; /* RCC not modeled in QEMU; informational only */
-#else
     HAL_Init();
     SystemClock_Config();
-#endif
 
     /* DWT cycle counter */
-    DEMCR |= (1u << 24);          /* TRCENA */
-    DWT_CYCCNT = 0;
-    DWT_CTRL |= 1u;               /* CYCCNTENA */
+    CoreDebug->DEMCR |= CoreDebug_DEMCR_TRCENA_Msk;
+    DWT->CYCCNT = 0;
+    DWT->CTRL |= DWT_CTRL_CYCCNTENA_Msk;
 
     sh_write0("\n--- CMSIS-DSP benchmark, fftLen=4096, SYSCLK=168 MHz ---\n");
     print_line("SystemCoreClock", SystemCoreClock);
-    print_line("DWT_CYCCNT alive", DWT_CYCCNT);
+    print_line("DWT_CTRL.NOCYCCNT", (DWT->CTRL & DWT_CTRL_NOCYCCNT_Msk) != 0); print_line("DWT->CYCCNT alive", DWT->CYCCNT);
 
     if (arm_cfft_init_f32(&S, FFT_LEN) != ARM_MATH_SUCCESS)
         Error_Handler();
@@ -125,11 +126,11 @@ int main(void)
     best = 0xFFFFFFFFu; worst = 0; sum = 0;
     for (int it = 0; it < ITERS; it++) {
         fill_input();
-        t0 = DWT_CYCCNT;
+        t0 = DWT->CYCCNT;
         mark_cfft_begin();
         arm_cfft_f32(&S, fft_buf, 0, 1);
         mark_cfft_end();
-        t1 = DWT_CYCCNT;
+        t1 = DWT->CYCCNT;
         uint32_t d = t1 - t0;
         sum += d;
         if (d < best) best = d;
@@ -152,9 +153,9 @@ int main(void)
     best = 0xFFFFFFFFu; worst = 0; sum = 0;
     for (int it = 0; it < ITERS; it++) {
         fill_input();
-        t0 = DWT_CYCCNT;
+        t0 = DWT->CYCCNT;
         arm_cfft_f32(&S, fft_buf, 0, 0);
-        t1 = DWT_CYCCNT;
+        t1 = DWT->CYCCNT;
         uint32_t d = t1 - t0;
         sum += d;
         if (d < best) best = d;
@@ -168,11 +169,11 @@ int main(void)
     for (int it = 0; it < ITERS; it++) {
         fill_input();
         arm_cfft_f32(&S, fft_buf, 0, 1);   /* fresh spectrum as input */
-        t0 = DWT_CYCCNT;
+        t0 = DWT->CYCCNT;
         mark_mag_begin();
         arm_cmplx_mag_f32(fft_buf, mag_buf, FFT_LEN);
         mark_mag_end();
-        t1 = DWT_CYCCNT;
+        t1 = DWT->CYCCNT;
         uint32_t d = t1 - t0;
         sum += d;
         if (d < best) best = d;
@@ -187,7 +188,6 @@ int main(void)
     while (1) { }
 }
 
-#ifndef BENCH_QEMU
 /**
  * System clock -> 168 MHz from the 8 MHz HSE crystal:
  * PLLM=4, PLLN=168, PLLP=2, PLLQ=7.
@@ -226,4 +226,3 @@ static void SystemClock_Config(void)
     if (HAL_GetREVID() >= 0x1001)
         __HAL_FLASH_PREFETCH_BUFFER_ENABLE();
 }
-#endif

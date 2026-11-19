@@ -1,6 +1,6 @@
-# Benchmark build - STM32F405 (QEMU netduinoplus2 machine), Cortex-M4F hard float.
+# Benchmark build - STM32F407VG on the STM32F4-Discovery board (ST-LINK/V2.1).
 # Base: STM32CubeF4 ADC_RegularConversion_DMA example, RCC set to 168 MHz (M=4 N=168 P=2 Q=7).
-# The same clock config applies to STM32F407 (identical clock tree / PLL limits).
+# Flash, run and DWT readout all go through openocd (board/stm32f4discovery.cfg).
 CUBE    := /home/kirill/work/STM32CubeF4
 HAL     := $(CUBE)/Drivers/STM32F4xx_HAL_Driver
 CMSIS   := $(CUBE)/Drivers/CMSIS
@@ -11,20 +11,22 @@ CROSS   := arm-none-eabi-
 CC      := $(CROSS)gcc
 OBJDUMP := $(CROSS)objdump
 SIZE    := $(CROSS)size
+GDB     := gdb-multiarch
 
 CPATH   := Inc \
            $(HAL)/Inc \
            $(HAL)/Inc/Legacy \
            $(CMSIS)/Device/ST/STM32F4xx/Include \
            $(CMSIS)/Include \
+           $(CMSIS)/Core/Include \
            $(DSPINC) \
            $(DSPPRIV)
 INCLUDES := $(addprefix -I,$(CPATH))
 
 CPUFLAGS := -mcpu=cortex-m4 -mthumb -mfpu=fpv4-sp-d16 -mfloat-abi=hard
-DEFS     := -DSTM32F405xx -DUSE_HAL_DRIVER -DARM_MATH_CM4
+DEFS     := -DSTM32F407xx -DUSE_HAL_DRIVER -DARM_MATH_CM4
 
-SRC_S := Src/startup_stm32f405xx.s
+SRC_S := Src/startup_stm32f407vgtx.s
 SRC_C := Src/main.c Src/system_stm32f4xx.c \
          dsp/arm_cfft_f32.c dsp/arm_cfft_radix8_f32.c dsp/arm_cfft_init_f32.c \
          dsp/arm_bitreversal2.c dsp/arm_cmplx_mag_f32.c \
@@ -40,60 +42,48 @@ LDFLAGS := $(CPUFLAGS) -TSTM32F407VGTX_FLASH.ld \
            -Wl,--gc-sections -Wl,--start-group -lc -lm -Wl,--end-group \
            --specs=nano.specs --specs=nosys.specs
 
-BUILD := build
-ELF    := $(BUILD)/qemu_Os.elf
-QEMU   := qemu-system-arm -M netduinoplus2 -cpu cortex-m4 -nographic \
-          -semihosting-config enable=on,target=native
+BUILD  := build
+HW_ELF := $(BUILD)/hw_Os.elf
+OCD    := openocd -f board/stm32f4discovery.cfg
 
-all: $(BUILD)/qemu_Os.elf $(BUILD)/qemu_O2.elf $(BUILD)/hw_Os.elf $(BUILD)/hw407_Os.elf
+all: $(HW_ELF)
 
 $(BUILD):
 	mkdir -p $@
 
-$(BUILD)/qemu_Os.elf: $(BUILD) $(SRC_C) $(SRC_S) $(SRC_COMMON)
-	$(CC) $(CPUFLAGS) $(INCLUDES) $(DEFS) -DBENCH_QEMU -Os $(SRC_S) $(SRC_C) $(LDFLAGS) -o $@
-
-$(BUILD)/qemu_O2.elf: $(BUILD) $(SRC_C) $(SRC_S) $(SRC_COMMON)
-	$(CC) $(CPUFLAGS) $(INCLUDES) $(DEFS) -DBENCH_QEMU -O2 $(SRC_S) $(SRC_C) $(LDFLAGS) -o $@
-
-$(BUILD)/hw_Os.elf: $(BUILD) $(SRC_C) $(SRC_S) $(SRC_COMMON)
+$(HW_ELF): $(BUILD) $(SRC_C) $(SRC_S) $(SRC_COMMON)
 	$(CC) $(CPUFLAGS) $(INCLUDES) $(DEFS) -Os $(SRC_S) $(SRC_C) $(SRC_HW) $(SRC_COMMON) $(LDFLAGS) -o $@
 
-# flashable on the STM32F4-Discovery (STM32F407VG); semihosting output requires
-# a debug session (ST-Link GDB server / STM32CubeIDE with semihosting enabled)
-$(BUILD)/hw407_Os.elf: $(BUILD) $(SRC_C) $(SRC_S) $(SRC_COMMON)
-	cp $(CUBE)/Drivers/CMSIS/Device/ST/STM32F4xx/Source/Templates/gcc/startup_stm32f407xx.s $(BUILD)/
-	$(CC) $(CPUFLAGS) $(INCLUDES) -DSTM32F407xx -DUSE_HAL_DRIVER -DARM_MATH_CM4 -Os \
-	      $(BUILD)/startup_stm32f407xx.s $(SRC_C) $(SRC_HW) $(SRC_COMMON) $(LDFLAGS) -o $@
-
-disasm: $(BUILD)/qemu_Os.elf
-	$(OBJDUMP) -d $< > $(BUILD)/qemu_Os.disasm
+disasm: $(HW_ELF)
+	$(OBJDUMP) -d $< > $(BUILD)/hw_Os.disasm
 
 size: all
-	$(SIZE) $(BUILD)/*.elf
+	$(SIZE) $(HW_ELF)
 
-# functional run + DWT availability probe
-run: $(ELF)
-	$(QEMU) -kernel $(ELF)
+# flash + run: semihosting prints (DWT CYCCNT results) appear on stdout;
+# the firmware signals completion with semihosting SYS_EXIT.
+flash: $(HW_ELF)
+	$(OCD) -c "init" \
+	       -c "arm semihosting enable" \
+	       -c "reset halt" \
+	       -c "program $(HW_ELF) verify" \
+	       -c "reset run" \
+	       -c "sleep 60000" \
+	       -c "shutdown"
 
-# instruction-trace run (single iteration, no chaining, deterministic):
-# qemu.log holds TB traces; marker functions bracket each measurement
-trace: $(BUILD)/qemu_I1.elf
-	rm -f /tmp/qemu.log
-	$(QEMU) -kernel $(BUILD)/qemu_I1.elf -d nochain,exec -D /tmp/qemu.log
-	@echo "log lines: $$(wc -l < /tmp/qemu.log)"
+# start openocd as the debug server (gdb on 3333, telnet on 4444)
+server:
+	$(OCD)
 
-$(BUILD)/qemu_I1.elf: $(BUILD) $(SRC_C) $(SRC_S) $(SRC_COMMON)
-	$(CC) $(CPUFLAGS) $(INCLUDES) $(DEFS) -DBENCH_QEMU -DITERS=1 -Os $(SRC_S) $(SRC_C) $(LDFLAGS) -o $@
-
-# single-step trace: every guest instruction is one Trace line in the log,
-# so counting lines between two marker PCs yields exact instruction counts
-trace1: $(BUILD)/qemu_I1.elf
-	rm -f /tmp/qemu1.log
-	$(QEMU) -kernel $(BUILD)/qemu_I1.elf -d nochain,exec -accel tcg,one-insn-per-tb=on -D /tmp/qemu1.log
-	@echo "log lines: $$(wc -l < /tmp/qemu1.log)"
+# read the DWT registers via gdb while an openocd server (`make server`) is running
+dwt:
+	$(GDB) -batch -ex "target remote :3333" \
+	       -ex 'printf "DWT_CTRL  = 0x%08x\n", *(unsigned int*)0xE0001000' \
+	       -ex 'printf "DWT_CYCCNT = %u cycles\n", *(unsigned int*)0xE0001004' \
+	       -ex 'printf "DEMCR     = 0x%08x\n", *(unsigned int*)0xE000EDFC' \
+	       -ex "detach"
 
 clean:
 	rm -f $(BUILD)/*.elf $(BUILD)/*.map $(BUILD)/*.disasm
 
-.PHONY: all disasm size run trace clean
+.PHONY: all disasm size flash server dwt clean
