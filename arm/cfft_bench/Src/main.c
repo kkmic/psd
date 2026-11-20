@@ -20,14 +20,6 @@
 #define ITERS     20
 #endif
 
-/* Trace markers: called immediately before/after each measured call.
- * Under `qemu -d nochain,exec` each call shows up as exactly one TB
- * execution in the trace log, bracketing the measured function. */
-#define MARK_NOINLINE __attribute__((noinline, used))
-static void MARK_NOINLINE mark_cfft_begin(void) { __asm volatile("nop"); }
-static void MARK_NOINLINE mark_cfft_end(void)   { __asm volatile("nop"); }
-static void MARK_NOINLINE mark_mag_begin(void)  { __asm volatile("nop"); }
-static void MARK_NOINLINE mark_mag_end(void)    { __asm volatile("nop"); }
 
 static void SystemClock_Config(void);
 
@@ -127,9 +119,7 @@ int main(void)
     for (int it = 0; it < ITERS; it++) {
         fill_input();
         t0 = DWT->CYCCNT;
-        mark_cfft_begin();
         arm_cfft_f32(&S, fft_buf, 0, 1);
-        mark_cfft_end();
         t1 = DWT->CYCCNT;
         uint32_t d = t1 - t0;
         sum += d;
@@ -170,9 +160,7 @@ int main(void)
         fill_input();
         arm_cfft_f32(&S, fft_buf, 0, 1);   /* fresh spectrum as input */
         t0 = DWT->CYCCNT;
-        mark_mag_begin();
         arm_cmplx_mag_f32(fft_buf, mag_buf, FFT_LEN);
-        mark_mag_end();
         t1 = DWT->CYCCNT;
         uint32_t d = t1 - t0;
         sum += d;
