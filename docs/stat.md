@@ -27,14 +27,22 @@ Reference project: `STM32CubeF4/Projects/STM32F4-Discovery/Examples/ADC/ADC_Regu
 ## 2. Methodology
 
 Measured **on the real board** with the DWT cycle counter (CMSIS core_cm4.h
-definitions: `CoreDebug->DEMCR |= TRCENA`, `DWT->CTRL |= CYCCNTENA`, read
+definitions: 
+```c
+CoreDebug->DEMCR |= TRCENA
+DWT->CTRL |= CYCCNTENA
+```
+read
 `DWT->CYCCNT` around each call). 20 iterations per measurement; the program
 prints best/worst/average via semihosting, captured by openocd
 (`board/stm32f4discovery.cfg`, ST-LINK/V2.1).
 
 Build: CMSIS-DSP 1.10.0 sources from STM32CubeF4, `arm-none-eabi-gcc 10.3.1 -Os`
-(the reference project's optimization level), `-mcpu=cortex-m4 -mfpu=fpv4-sp-d16
--mfloat-abi=hard`, code in flash (5 WS + ART prefetch). Functional check: a
+(the reference project's optimization level):
+```c++
+-mcpu=cortex-m4 -mfpu=fpv4-sp-d16 -mfloat-abi=hard
+```
+Code in flash (5 WS + ART prefetch). Functional check: a
 50 Hz sine at 8192 Hz sample rate puts the spectral peak in bin 25 — the run
 prints `peak bin (expect 25) = 25`. OK.
 
